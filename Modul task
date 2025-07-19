@@ -1,0 +1,148 @@
+create view `Students.v4_Vitalii_modul_task`  as
+-- Підготовка даних по акаунтах
+with account as (
+
+
+SELECT
+   s.date date,
+   sp.country as country,
+   a.send_interval send_interval,
+   a.is_verified is_verified,
+   a.is_unsubscribed is_unsubscribed,
+   count(distinct a.id) as acc_cnt
+FROM `DA.account` a
+join `DA.account_session` acs
+on a.id = acs.account_id
+JOIN `DA.session` s
+on s.ga_session_id = acs.ga_session_id
+JOIN `DA.session_params` sp
+on sp.ga_session_id = s.ga_session_id
+group by
+   s.date,
+   sp.country,
+   a.send_interval,
+   a.is_verified,
+   a.is_unsubscribed
+),
+
+
+email_metrics as (
+SELECT
+   date_add(s.date, interval es.sent_date day) as date,
+   sp.country country ,
+   a.send_interval send_interval,
+   a.is_verified is_verified,
+   a.is_unsubscribed is_unsubscribed,
+   COUNT(DISTINCT es.id_message) AS sent_msg,
+   COUNT(DISTINCT eo.id_message) AS open_msg,
+   COUNT(DISTINCT ev.id_message ) AS visit_msg
+FROM
+  `DA.email_sent` es
+left join `DA.email_open` eo
+on eo.id_message = es.id_message
+left join  `DA.email_visit` ev 
+on ev.id_message = es.id_message
+join `DA.account_session` acs
+on es.id_account = acs.account_id
+join `DA.session` s
+on s.ga_session_id = acs.ga_session_id
+join `DA.session_params` sp
+on sp.ga_session_id = acs.ga_session_id
+join `DA.account` a
+on a.id =es.id_account
+group by
+date_add(s.date, interval es.sent_date day),
+sp.country,
+a.send_interval,
+a.is_verified,
+a.is_unsubscribed
+),
+
+
+--обєднання данних двох вище вказаних таблиць
+unions as (
+SELECT
+   date,
+   country,
+   send_interval,
+   is_verified,
+   is_unsubscribed,
+   acc_cnt,
+   0 as sent_msg,
+   0 as open_msg,
+   0 as visit_msg
+FROM account
+
+
+union all
+
+
+SELECT
+   date,
+   country,
+   send_interval,
+   is_verified,
+   is_unsubscribed,
+   0 as acc_cnt,
+   sent_msg,
+   open_msg,
+   visit_msg
+FROM
+  email_metrics
+
+
+),
+--сумування значень по листам та прибирання "0" після юніна
+final_data as (
+SELECT
+ date,
+ country,
+ send_interval,
+ is_verified,
+ is_unsubscribed,
+ sum(acc_cnt) account_cnt,
+ sum(sent_msg) as sent_msg,
+ sum(open_msg) as open_msg,
+ sum(visit_msg) as visit_msg
+FROM unions
+group by
+date,
+ country,
+ send_interval,
+ is_verified,
+ is_unsubscribed
+),
+-- обчислення акаунтів та відправлених повідомлень, ранг по кожній країні
+final_sums as (
+
+
+SELECT *,
+dense_RANK() OVER (ORDER BY total_country_account_cnt DESC) AS rank_total_country_account_cnt,
+dense_RANK() OVER (ORDER BY total_country_sent_cnt DESC) AS rank_total_country_sent_cnt
+FROM (
+SELECT *,
+SUM (account_cnt) OVER (PARTITION BY country) AS total_country_account_cnt,
+SUM (sent_msg) OVER (PARTITION BY country) AS total_country_sent_cnt,
+FROM final_data
+)
+)
+--кінцева таблиця з фільтрацією даних по рангу
+SELECT
+    date,
+    country,
+    send_interval,
+    is_verified,
+    is_unsubscribed,
+    account_cnt,
+    sent_msg,
+    open_msg,
+    visit_msg,
+    total_country_account_cnt,
+    total_country_sent_cnt,
+    rank_total_country_account_cnt,
+    rank_total_country_sent_cnt
+FROM final_sums
+where
+rank_total_country_account_cnt <= 10
+or
+rank_total_country_sent_cnt <= 10
